@@ -2,10 +2,20 @@
 // goes through call(). pokedex-agents keeps Herdr's shared state a mirror of it (mirror()), so
 // game() and shared("pokedex.*") read as before in every mod. Copied to each mod by scripts/sync-game.sh.
 import { WebSocket } from "websocket";
-import { shared, setShared, notify, exec, agents } from "herdr";
+import { shared, setShared, notify, exec, agents, readTextFile, home, playSound } from "herdr";
 import { shouldAlert, quests, liveStreak, liveWeek, OPTIONS, RULES_VERSION, KEYS as KEY_MAP, LABELS } from "./game.js";
 
-export const SERVER = "127.0.0.1:7151";
+// Local fix: the port follows the server's config.json (state folder), which mirror() reads into
+// shared "pokedex.port"; every mod copy reads it from there. 7151 is the server's default.
+export const DEFAULT_PORT = 7151;
+export const server = () => `127.0.0.1:${shared("pokedex.port") ?? DEFAULT_PORT}`;
+async function configuredPort() {
+  try {
+    const text = await readTextFile(`${home()}/.local/state/pokedex-agents-server/config.json`);
+    const port = Number(JSON.parse(text ?? "{}").port);
+    return Number.isInteger(port) && port > 0 ? port : DEFAULT_PORT;
+  } catch { return DEFAULT_PORT; }
+}
 const KEYS = ["pokedex.game", "pokedex.caught", "pokedex.partners", "pokedex.projects"];
 // Mirrored too, but never merged: the options belong to the server's save; the readable key -> saved
 // key and saved key -> label maps are kept on this machine by the server (see game.js).
@@ -24,7 +34,7 @@ export const rulesMismatch = () => { const v = shared(VIEW); return v && v.rules
 
 // One request; throws only when the server can't be reached.
 async function post(action, args, at) {
-  const res = await fetch(`http://${SERVER}/call`, {
+  const res = await fetch(`http://${server()}/call`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ action, args, origin: "herdr", ...(at ? { at } : {}) }),
@@ -82,13 +92,14 @@ async function report(action, args) {
 export async function shareOnX() {
   let r;
   try {
-    r = await (await fetch(`http://${SERVER}/share`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json();
+    r = await (await fetch(`http://${server()}/share`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json();
   } catch (error) {
     throw new Error(`Pokedex server not reachable: ${error}`);
   }
   if (!r.ok) throw new Error(r.error);
-  await exec("open", [r.url], { timeout: 5000 });
-  return r.copied ? "Card copied: paste it into the post (⌘V)" : "X opened; the card couldn't be copied";
+  // Local fix: `open` is macOS only. Try it, then xdg-open, wslview, and Windows' explorer.exe (WSL).
+  await exec("sh", ["-c", 'open "$1" 2>/dev/null || xdg-open "$1" 2>/dev/null || wslview "$1" 2>/dev/null || explorer.exe "$1"', "sh", r.url], { timeout: 5000 }).catch(() => {});
+  return r.copied ? "Card copied: paste it into the post" : `X opened; the card couldn't be copied. It's saved at ${r.card ?? "the server's state folder"}`;
 }
 
 // For changes nobody waits on: a failure is logged, not thrown. Agent reports are queued while the
@@ -121,21 +132,41 @@ export async function mirror(cx) {
   let shown = since, tries = 0, merged = false;
   for (;;) {
     try {
-      const ws = await WebSocket.connect(`ws://${SERVER}/ws`);
-      tries = 0;
+      const port = await configuredPort();
+      if (shared("pokedex.port") !== port) setShared("pokedex.port", port);
+      let ws;
+      try {
+        ws = await WebSocket.connect(`ws://${server()}/ws`);
+      } catch (error) {
+        // Local fix: only a failed connect means the server is down; start it once per outage.
+        if (tries++ === 0) {
+          console.log(`pokedex: server not reachable (${error}); starting it`);
+          try { await startServer(); } catch (e) { console.log(`pokedex: could not start the server: ${e}`); }
+        }
+        await cx.sleep(Math.min(10000, 1000 * tries));
+        continue;
+      }
       flushOutbox(); // reports queued while it was out of reach
       for (;;) {
         const msg = await ws.read();
         const state = JSON.parse(typeof msg === "string" ? msg : new TextDecoder().decode(msg));
         if (!merged) {
-          const mine = Object.fromEntries(KEYS.map((k) => [k, shared(k)]));
-          if (!(state.shared["pokedex.merged"] ?? []).includes("herdr") && Object.values(mine).some((v) => v !== undefined)) {
+          // Local fix: shared() gives null for a key never set, so leave those out (a fresh install
+          // otherwise sends nulls and the server's merge throws). Herdr's own flag records that this
+          // save was merged or had nothing to merge; without it, the next start would merge the
+          // mirrored copy of the server's save into itself and double every count.
+          const done = shared("pokedex.herdrMerged") === true || (state.shared["pokedex.merged"] ?? []).includes("herdr");
+          const mine = Object.fromEntries(KEYS.map((k) => [k, shared(k)]).filter(([, v]) => v != null));
+          if (!done && Object.keys(mine).length) {
             await call("merge", "herdr", mine); // throws until it succeeds: nothing is mirrored before
+            setShared("pokedex.herdrMerged", true);
             merged = true;
             continue; // the merged state comes next
           }
+          if (!done) setShared("pokedex.herdrMerged", true);
           merged = true;
         }
+        tries = 0;
         for (const k of MIRRORED) {
           const v = state.shared[k];
           if (v !== undefined && JSON.stringify(v) !== JSON.stringify(shared(k))) setShared(k, v);
@@ -144,6 +175,9 @@ export async function mirror(cx) {
         for (const n of state.notes ?? []) {
           if (n.origin !== "herdr" || n.at <= shown) continue;
           shown = n.at;
+          // Local fix: the server plays jingles only on macOS; elsewhere it sends them as a note and
+          // Herdr plays them (silent when Herdr's sounds are off).
+          if (n.sound && /^[a-z]+\.mp3$/.test(n.sound)) { try { playSound(`mods/pokedex-agents/sounds/${n.sound}`); } catch {} }
           if (n.quiet) continue;
           if (n.encounter && !shouldAlert(agents().filter((a) => a.status === "working").length)) continue;
           notify({ title: n.title, body: n.body, level: n.level, icon: n.icon ?? undefined, action: n.action ?? undefined, timeout: n.timeout ?? undefined });
@@ -151,10 +185,9 @@ export async function mirror(cx) {
         cx.notify();
       }
     } catch (error) {
-      if (tries++ === 0) {
-        console.log(`pokedex: server connection lost (${error}); starting it`);
-        try { await startServer(); } catch (e) { console.log(`pokedex: could not start the server: ${e}`); }
-      }
+      // Connected but something failed (a refused merge, bad data): back off, don't start a server.
+      tries++;
+      console.log(`pokedex: server connection lost (${error})`);
     }
     await cx.sleep(Math.min(10000, 1000 * tries));
   }

@@ -1,0 +1,12 @@
+{
+  "global": {
+    "ctrl-shift-a": { "command": "tab.new", "args": { "name": "claude", "argv": ["claude"] } }
+  },
+  "layout:pokedex": {
+    "ctrl-shift-k": "mod.open:pokedex-picker",
+    "ctrl-shift-g": "pokedex-alerts.focus",
+    "ctrl-shift-j": "pokedex-alerts.next-needy",
+    "ctrl-shift-y": "pokedex-alerts.peek",
+    "ctrl-shift-i": "pokedex-alerts.pin"
+  }
+}

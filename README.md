@@ -194,6 +194,39 @@ Want to build it from an empty folder instead? [RECIPE.md](RECIPE.md) is the bri
 
 ---
 
+## Este fork (Linux / WSL)
+
+Fork de [anthonymq/pokemon-herdr](https://github.com/anthonymq/pokemon-herdr) con arreglos para Linux/WSL
+(bucle de merge y progreso duplicado, reinicio del servidor, sonidos, Share en WSL, puerto configurable),
+botón **Keys** con los atajos, atajos `ctrl-shift-*` y el uso de Claude (5h / semanal) en la barra de estado.
+Usa el servidor [mitcheljimenez/pokedex-agents-server](https://github.com/mitcheljimenez/pokedex-agents-server).
+
+### Qué descargar
+
+| Qué | Para qué | Cómo |
+|---|---|---|
+| Herdr (`herdr-app`) | La app | instálalo primero |
+| git, jq | Instalar y unir configs | `sudo apt install git jq` |
+| Bun | Corre el servidor del juego | `curl -fsSL https://bun.sh/install \| bash` |
+| mpg123 | Sonidos (opcional) | `sudo apt install mpg123` |
+| zoxide | Sugerir carpetas en el picker (opcional) | `curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh \| sh` y `eval "$(zoxide init bash)"` en `~/.bashrc` |
+| Claude Code | Agentes + uso 5h/semanal (opcional) | `curl -fsSL https://claude.ai/install.sh \| bash` |
+| wl-clipboard o xclip | Copiar la imagen de Share, solo Linux nativo (en WSL no hace falta) | `sudo apt install wl-clipboard` |
+
+### Instalar
+
+```sh
+git clone https://github.com/mitcheljimenez/pokemon-herdr.git ~/repos/pokemon-herdr
+~/repos/pokemon-herdr/scripts/install.sh
+herdr-app do layout.switch --name pokedex
+```
+
+El script revisa lo que falta, clona el servidor, copia layout y mods (respaldando lo anterior),
+une `keys.json` y `programs.json`, y configura el status line de Claude Code para el uso.
+Tu partida (`~/.local/state/pokedex-agents-server/shared.json`) no se toca; para llevarla a otro PC, copia ese archivo.
+
+---
+
 ## Install
 
 You need [Bun](https://bun.sh) and the [Pokedex agents server](https://github.com/anthonymq/pokedex-agents-server), which holds the game and your progress:

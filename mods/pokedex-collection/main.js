@@ -122,9 +122,12 @@ export default class PokedexCollection extends View {
     });
   }
 
-  choose(id) {
-    call("setPartner", this.project, id)
-      .then(() => closeOverlay(props().overlay), (error) => { this.error = error.message; });
+  // Local fix: redraw after a refused choice, so its error shows at once.
+  choose(id, cx) {
+    cx.spawn(async (cx) => {
+      try { await call("setPartner", this.project, id); closeOverlay(props().overlay); }
+      catch (error) { this.error = error.message; cx.notify(); }
+    });
   }
 
   // Party mode: a catch joins the end of the party, a member leaves it (the party keeps at least one).
@@ -152,7 +155,7 @@ export default class PokedexCollection extends View {
     return v_flex().id(`pokemon-${p.id}`).flex_1().min_w(0).h(CELL_H).px(4).py(5).gap(1).items_center().rounded(5)
       .bg(selected ? (lit ? C.raised : C.panel) : C.screen)
       .when(clickable, el => el.cursor_pointer().hover(s => s.bg(C.raised)))
-      .when(Boolean(this.project) && selected && !mascot, el => el.on_click(() => this.choose(p.id)))
+      .when(Boolean(this.project) && selected && !mascot, el => el.on_click((_e, cx) => this.choose(p.id, cx)))
       .when(this.partyMode && selected, el => el.on_click((_e, cx) => { this.toggleParty(p.id, cx); cx.notify(); }))
       .when(!this.picking && selected, el => el
         .on_click((_e, cx) => { this.picked = this.picked === p.id ? null : p.id; cx.notify(); }))

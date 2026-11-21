@@ -1,6 +1,6 @@
 import { View, div, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { agents, focused, props, run, spaces, shared, openOverlay, exec, theme, nextCommand, notify } from "herdr";
+import { agents, focused, props, run, spaces, shared, openOverlay, exec, theme, nextCommand, notify, readTextFile, home } from "herdr";
 import { game, trainerLevel, options, BADGES, CAUGHT, ALERTS, ENCOUNTER_MS, WILD_MAX, STREAK_NEED } from "./game.js";
 import { call, streakNow, weekNow, rulesMismatch } from "./server.js";
 
@@ -29,8 +29,9 @@ export default class PokedexConsole extends View {
     this.width = 300;
     this.git = null;
     if (props()?.role === "status") {
-      cx.timer.every(5000, (cx) => this.refreshGit(cx));
+      cx.timer.every(5000, (cx) => { this.refreshGit(cx); this.refreshUsage(cx); });
       this.refreshGit(cx);
+      this.refreshUsage(cx);
     }
     cx.spawn(async (cx) => {
       for (;;) {
@@ -40,6 +41,46 @@ export default class PokedexConsole extends View {
         cx.notify();
       }
     });
+  }
+
+  // Local addition: Claude plan usage (5h and weekly). The Claude Code status line
+  // (~/.claude/statusline-command.sh) saves its input JSON, which carries rate_limits.
+  refreshUsage(cx) {
+    cx.spawn(async (cx) => {
+      try {
+        const data = JSON.parse(await readTextFile(`${home()}/.cache/claude-usage/last.json`));
+        this.usage = data.rate_limits ?? null;
+      } catch { this.usage = null; }
+      cx.notify();
+    });
+  }
+
+  usageChip(t) {
+    const u = this.usage;
+    if (!u) return null;
+    const now = Date.now() / 1000;
+    const left = (secs) => {
+      const m = Math.max(0, Math.round((secs - now) / 60));
+      return m >= 1440 ? `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`
+        : m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
+    };
+    // A window whose reset time has passed is back at 0 until a session reports again.
+    const pct = (w) => !w ? null : w.resets_at && w.resets_at < now ? 0 : Math.round(w.used_percentage ?? 0);
+    const color = (p) => p >= 90 ? t.blocked : p >= 70 ? "#e0b050" : C.lcd;
+    const part = (label, w) => {
+      const p = pct(w);
+      if (p === null) return null;
+      return h_flex().flex_none().gap(4).items_center()
+        .child(div().text_color("#b6c6b8").child(label))
+        .child(div().w(36).h(5).rounded(2).bg("#ffffff1c")
+          .child(div().h_full().rounded(2).w(Math.max(1, Math.min(36, p * 0.36))).bg(color(p))))
+        .child(div().text_color(color(p)).child(`${p}%`));
+    };
+    const tip = [["5h", u.five_hour], ["Week", u.seven_day]]
+      .filter(([, w]) => w).map(([l, w]) => `${l}: ${pct(w)}% used, resets in ${left(w.resets_at)}`).join(" \u00b7 ");
+    return h_flex().id("status-usage").flex_none().gap(10).items_center().px(5).rounded(3)
+      .tooltip(`Claude usage \u00b7 ${tip}`)
+      .children([part("5h", u.five_hour), part("7d", u.seven_day)].filter(Boolean));
   }
 
   // The tall grass count, and the two options. Clicking the alert chip cycles off, on, smart;
@@ -138,7 +179,7 @@ export default class PokedexConsole extends View {
       : !g.party.length ? "Choose your starter"
       : g.lifetime > 0 && !g.seen.includes("phase2") ? "New Pokedex: see what changed"
       : g.gifts.pending.length ? "A gift is waiting" : null;
-    return h_flex().id("pokedex-trainer-open").flex_1().min_w(0).h(26).px(8).gap(4).items_center()
+    return h_flex().id("pokedex-trainer-open").flex_1().min_w(0).overflow_hidden().h(26).px(8).gap(4).items_center()
       .rounded(4).bg(C.lcd).text_color(C.ink).text_size(11).cursor_pointer()
       .tooltip(`${news ? news + " \u00b7 " : ""}Trainer Lv ${trainerLevel(g)} \u00b7 ${(shared(CAUGHT) ?? []).length}/151 caught \u00b7 ${g.tasks} tasks \u00b7 open trainer card`)
       .hover(s => s.bg("#c8dca6"))
@@ -162,6 +203,7 @@ export default class PokedexConsole extends View {
       .when(compact, el => el.child(this.trainer(true)))
       .when(!compact, el => el
         .child(this.trainer(false))
+        .child(this.button("pokedex-keys", "Keys", () => run("app.help"), 44))
         .child(this.button("pokedex-settings", "Settings",
           () => run("app.settings", { section: "look" }), 72)));
   }
@@ -195,6 +237,7 @@ export default class PokedexConsole extends View {
         .when(Boolean(g?.behind), el => el.child(div().text_color(t.blocked).child(`\u2193${g.behind}`)))
         .when(Boolean(g?.dirty), el => el.child(div().text_color(C.cream).child(`\u25cf${g.dirty}`)))))
       .child(div().flex_1())
+      .when(Boolean(this.usage), el => el.child(this.usageChip(t)))
       .child(this.grassAndOptions(t))
       .children(counts.filter(c => c.count > 0).map(c =>
         h_flex().id(`status-${c.status}`).flex_none().gap(5).items_center().px(5).rounded(3)
